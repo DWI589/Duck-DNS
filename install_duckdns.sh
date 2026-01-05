@@ -1,90 +1,110 @@
 #!/bin/bash
 
-# ====================================================
-# Duck DNS 一键安装脚本 (最终稳健版)
-# ====================================================
+# =========================================================
+# Duck DNS Auto-Updater for AWS Lightsail (一键安装版)
+# =========================================================
 
-# 1. 检查输入参数
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+# 1. 参数检查
 DOMAIN=$1
 TOKEN=$2
 
 if [ -z "$DOMAIN" ] || [ -z "$TOKEN" ]; then
-    echo "错误: 请提供域名和 Token。"
+    echo -e "${RED}错误: 参数缺失${NC}"
     echo "用法: bash install_duckdns.sh [你的域名] [你的Token]"
+    echo "示例: bash install_duckdns.sh myvps 841f-xxxx-xxxx"
     exit 1
 fi
 
-# 2. 检查必要软件依赖
-for cmd in curl crontab; do
-    if ! command -v $cmd &> /dev/null; then
-        echo "错误: 系统未安装 $cmd，请先安装后再运行。"
-        exit 1
+echo -e "${YELLOW}>>> 开始安装 Duck DNS (Lightsail 优化版)...${NC}"
+
+# 2. 检查并安装必要组件 (Cron/Curl)
+echo -e "正在检查系统依赖..."
+if [ -x "$(command -v apt-get)" ]; then
+    # Debian/Ubuntu
+    if ! command -v cron &> /dev/null; then
+        echo -e "${YELLOW}未检测到 Cron，正在安装...${NC}"
+        apt-get update -qq && apt-get install -y cron curl -qq
+        systemctl enable cron
+        systemctl start cron
     fi
-done
+elif [ -x "$(command -v yum)" ]; then
+    # CentOS/Amazon Linux
+    if ! command -v crond &> /dev/null; then
+        echo -e "${YELLOW}未检测到 Cron，正在安装...${NC}"
+        yum install -y cronie curl -q
+        systemctl enable crond
+        systemctl start crond
+    fi
+fi
 
-echo "正在开始安装 Duck DNS 更新脚本..."
-
-# 3. 确定绝对路径
-USER_HOME=$HOME
-WORK_DIR="$USER_HOME/duckdns"
+# 3. 创建工作目录
+WORK_DIR="$HOME/duckdns"
 mkdir -p "$WORK_DIR"
+cd "$WORK_DIR"
 
-# 4. 编写更新脚本 duck.sh
-# 注意：在 EOF 块中，针对生成的脚本内部变量使用 \$，针对当前安装脚本变量则直接使用
-cat <<EOF > "$WORK_DIR/duck.sh"
+# 4. 生成核心更新脚本 (写入 duck.sh)
+# 注意：这里使用了 AWS 元数据服务 169.254.169.254
+cat <<EOF > duck.sh
 #!/bin/bash
-
-# 设置 PATH 确保 Cron 环境下能找到命令
-PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-
 DOMAIN="$DOMAIN"
 TOKEN="$TOKEN"
-WORK_DIR="$WORK_DIR"
+LOG_FILE="$WORK_DIR/duck.log"
 
-# 获取外网 IPv4 (多接口备份，强制使用 IPv4)
-CURRENT_IP=\$(curl -4 -s --connect-timeout 5 http://whatismyip.akamai.com/ || \\
-             curl -4 -s --connect-timeout 5 https://ifconfig.me/ || \\
-             curl -4 -s --connect-timeout 5 https://api.ipify.org)
+# [关键步骤] 优先使用 AWS Lightsail 元数据获取公网 IPv4
+# 这种方法在 AWS 内部极快且 100% 准确
+IPV4=\$(curl -s -4 http://169.254.169.254/latest/meta-data/public-ipv4 --connect-timeout 2)
 
-# 检查 IP 是否获取成功
-if [ -z "\$CURRENT_IP" ]; then
-    echo "[\$(date)] 错误: 无法获取公网 IP" >> "\$WORK_DIR/duck_error.log"
+# 如果 AWS 元数据失败，回退到外部接口
+if [ -z "\$IPV4" ]; then
+    IPV4=\$(curl -s -4 https://ifconfig.me --connect-timeout 5)
+fi
+
+# 如果还是获取不到，退出并报错
+if [ -z "\$IPV4" ]; then
+    echo "KO" > \$LOG_FILE
     exit 1
 fi
 
-# 提交更新到 Duck DNS
-# -k 忽略证书校验，-s 静默模式，-S 显示错误，-o 记录结果
-curl -k -s -S "https://www.duckdns.org/update?domains=\$DOMAIN&token=\$TOKEN&ip=\$CURRENT_IP" -o "\$WORK_DIR/duck.log"
-
-# 记录历史日志
-echo "[\$(date)] IP updated to: \$CURRENT_IP" >> "\$WORK_DIR/duck_history.log"
+# 发送更新请求
+# 使用 -k 允许不安全的 SSL (防止老旧系统证书问题)
+curl -k -s "https://www.duckdns.org/update?domains=\$DOMAIN&token=\$TOKEN&ip=\$IPV4" > \$LOG_FILE
 EOF
 
-# 5. 设置权限
-chmod +x "$WORK_DIR/duck.sh"
+# 赋予执行权限
+chmod 700 duck.sh
 
-# 6. 设置 Cron 任务 (每 2 分钟运行一次)
-CRON_JOB="*/2 * * * * /bin/bash $WORK_DIR/duck.sh >/dev/null 2>&1"
+# 5. 设置 Crontab 定时任务
+echo -e "正在配置定时任务..."
+CRON_CMD="*/2 * * * * $WORK_DIR/duck.sh >/dev/null 2>&1"
 
-# 移除旧任务并添加新任务，确保不重复
-(crontab -l 2>/dev/null | grep -v "$WORK_DIR/duck.sh"; echo "$CRON_JOB") | crontab -
+# 备份现有 Crontab -> 删除旧的 duckdns 任务 -> 添加新任务
+(crontab -l 2>/dev/null | grep -v "duckdns/duck.sh"; echo "$CRON_CMD") | crontab -
 
-echo "------------------------------------------------"
-echo "安装完成！"
-echo "脚本位置: $WORK_DIR/duck.sh"
-echo "日志文件: $WORK_DIR/duck.log"
-echo "错误记录: $WORK_DIR/duck_error.log"
-echo "定时任务: 已设置每 2 分钟执行一次"
-echo "------------------------------------------------"
+# 6. 立即运行测试
+echo -e "${YELLOW}>>> 正在执行首次同步测试...${NC}"
+$WORK_DIR/duck.sh
 
-# 7. 立即执行一次并显示结果
-bash "$WORK_DIR/duck.sh"
-if [ -f "$WORK_DIR/duck.log" ]; then
-    RESULT=$(cat "$WORK_DIR/duck.log")
-    echo "首次运行结果 (期待 OK): $RESULT"
-    if [ "$RESULT" != "OK" ]; then
-        echo "提示: 返回结果不是 OK，请检查 Token 和域名是否正确。"
-    fi
+# 7. 检查结果
+RESULT=$(cat duck.log)
+CURRENT_IP=$(curl -s -4 http://169.254.169.254/latest/meta-data/public-ipv4)
+
+if [[ "$RESULT" == *"OK"* ]]; then
+    echo -e "${GREEN}=============================================${NC}"
+    echo -e "${GREEN}✅ 安装成功! ${NC}"
+    echo -e "当前公网 IP: ${CURRENT_IP}"
+    echo -e "更新状态: OK"
+    echo -e "脚本路径: $WORK_DIR/duck.sh"
+    echo -e "${GREEN}=============================================${NC}"
 else
-    echo "运行失败，请检查网络连接。"
+    echo -e "${RED}=============================================${NC}"
+    echo -e "${RED}❌ 更新失败!${NC}"
+    echo -e "返回内容: $RESULT"
+    echo -e "请检查您的 Token 或 域名 是否正确。"
+    echo -e "${RED}=============================================${NC}"
 fi
