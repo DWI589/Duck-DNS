@@ -41,7 +41,7 @@ EOF
 
 # 2. 权限与定时任务
 chmod +x "$WORK_DIR/duck.sh"
-(crontab -l 2>/dev/null | grep -v "duckdns"; echo "*/5 * * * * $WORK_DIR/duck.sh >/dev/null 2>&1") | crontab -
+(crontab -l 2>/dev/null | grep -v "duckdns"; echo "*/2 * * * * $WORK_DIR/duck.sh >/dev/null 2>&1") | crontab -
 
 # 3. 立即执行
 bash "$WORK_DIR/duck.sh"
