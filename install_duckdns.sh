@@ -49,15 +49,15 @@ if [ ! -z "\$IPV4" ]; then
     echo "\$RESPONSE" > "$WORK_DIR/duck.log"
     echo "[\$(date)] IP: \$IPV4 Status: \$RESPONSE" >> "$WORK_DIR/history.log"
     
-    # 保持历史记录文件不要过大 (只保留最后 1000 行)
-    tail -n 1000 "$WORK_DIR/history.log" > "$WORK_DIR/history.log.tmp" && mv "$WORK_DIR/history.log.tmp" "$WORK_DIR/history.log"
+    # 保持历史记录文件不要过大 (只保留最后 200 行)
+    tail -n 200 "$WORK_DIR/history.log" > "$WORK_DIR/history.log.tmp" && mv "$WORK_DIR/history.log.tmp" "$WORK_DIR/history.log"
 fi
 EOF
 
 # 3. 设置脚本执行权限
 chmod +x "$WORK_DIR/duck.sh"
 
-# 4. 配置定时任务 (每 1 分钟运行一次)
+# 4. 配置定时任务 (每 2 分钟运行一次)
 # 使用绝对路径运行脚本，防止 Cron 找不到主目录
 (crontab -l 2>/dev/null | grep -v "duckdns/duck.sh"; echo "*/2 * * * * $WORK_DIR/duck.sh >/dev/null 2>&1") | crontab -
 
