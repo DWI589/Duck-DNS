@@ -4,6 +4,10 @@
 # Duck DNS Auto-Updater (AWS Lightsail Optimized - 2 Min)
 # =========================================================
 
+# 定义颜色 (防止输出乱码)
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
 # 1. 检查输入参数
 DOMAIN=$1
 TOKEN=$2
@@ -18,9 +22,29 @@ fi
 WORK_DIR="$HOME/duckdns"
 mkdir -p "$WORK_DIR"
 
-echo "正在安装 Duck DNS 更新脚本到 $WORK_DIR..."
+echo -e "${YELLOW}正在安装 Duck DNS 更新脚本到 $WORK_DIR...${NC}"
 
-# 2. 写入核心更新脚本 duck.sh
+# 2. 检查并安装必要组件 (Cron/Curl)
+echo -e "正在检查系统依赖..."
+if [ -x "$(command -v apt-get)" ]; then
+    # Debian/Ubuntu
+    if ! command -v cron &> /dev/null; then
+        echo -e "${YELLOW}未检测到 Cron，正在安装...${NC}"
+        sudo apt-get update -qq && sudo apt-get install -y cron curl -qq
+        sudo systemctl enable cron
+        sudo systemctl start cron
+    fi
+elif [ -x "$(command -v yum)" ]; then
+    # CentOS/Amazon Linux
+    if ! command -v crond &> /dev/null; then
+        echo -e "${YELLOW}未检测到 Cron，正在安装...${NC}"
+        sudo yum install -y cronie curl -q
+        sudo systemctl enable crond
+        sudo systemctl start crond
+    fi
+fi
+
+# 3. 写入核心更新脚本 duck.sh
 cat <<EOF > "$WORK_DIR/duck.sh"
 #!/bin/bash
 # ---------------------------------------------------------
@@ -54,18 +78,17 @@ if [ ! -z "\$IPV4" ]; then
 fi
 EOF
 
-# 3. 设置脚本执行权限
+# 4. 设置脚本执行权限
 chmod +x "$WORK_DIR/duck.sh"
 
-# 4. 配置定时任务 (每 2 分钟运行一次)
-# 使用绝对路径运行脚本，防止 Cron 找不到主目录
+# 5. 配置定时任务 (每 2 分钟运行一次)
 (crontab -l 2>/dev/null | grep -v "duckdns/duck.sh"; echo "*/2 * * * * $WORK_DIR/duck.sh >/dev/null 2>&1") | crontab -
 
-# 5. 立即运行一次并反馈结果
+# 6. 立即运行一次并反馈结果
 bash "$WORK_DIR/duck.sh"
 
 echo "------------------------------------------------"
-echo "安装完成！"
+echo -e "${YELLOW}安装完成！${NC}"
 echo "更新频率: 每 2 分钟"
 echo "当前状态: \$(cat $WORK_DIR/duck.log)"
 echo "查看历史: cat $WORK_DIR/history.log"
